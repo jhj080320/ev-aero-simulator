@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EV 에어로다이내믹 시뮬레이터</title>
+    <link rel="stylesheet" href="css/style.css">
+
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <div class="main-wrapper">
+        <div class="simulator-container">
+            <h2>⚡ EV 에어로다이내믹 시뮬레이터</h2>
+            <hr>
+
+            <div class="preset-buttons">
+                <button type="button" style="background: #333;" onclick="setVehiclePreset(1440, 0.208, 1880)">아이오닉 6 프리셋 (Cd 0.208)</button>
+                <button type="button" style="background: #e81d23;" onclick="setVehiclePreset(1445, 0.219, 1765)">테슬라 모델 3 프리셋 (Cd 0.219)</button>
+            </div>
+
+            <div class="control-panel">
+                <div class="input-group">
+                    <label>주행 속도: <span id="speed-val">90</span> km/h</label>
+                    <input type="range" id="speed" min="30" max="140" value="90" oninput="updateSimulator()">
+                </div>
+                <div class="input-group">
+                    <label>차량 전고 (height): <span id="height-val">1500</span> mm</label>
+                    <input type="range" id="height" min="1400" max="1600" value="1500" oninput="updateSimulator()">
+                </div>
+                <div class="input-group">
+                    <label>차량 전폭 (width): <span id="width-val">1850</span> mm</label>
+                    <input type="range" id="width" min="1800" max="1950" value="1850" oninput="updateSimulator()">
+                </div>
+                <div class="input-group feature-excluded">
+                    <label>차량 전장 (length) <span class="excluded-badge">제외된 피처</span>: <span id="length-val">4800</span> mm</label>
+                    <input type="range" id="length" min="4600" max="5000" value="4800" oninput="updateSimulator()">
+                    <p class="excluded-note">전비와의 상관계수 &lt; 0.01 → 모델 학습에서 제외됨. 값을 움직여도 전비가 변하지 않는 것을 직접 확인해보세요.</p>
+                </div>
+                <div class="button-group">
+                    <button type="button" id="btn-normal" onclick="loadSampleData(false)">정상 데이터 로드</button>
+                    <button type="button" id="btn-outlier" onclick="loadSampleData(true)">이상치 데이터 로드 (IQR 테스트)</button>
+                </div>
+                <div class="button-group">
+                    <button type="button" id="btn-missing" onclick="simulateMissingHeight()">결측치 시뮬레이션 (전고 센서 누락)</button>
+                    <button type="button" id="btn-restore" onclick="restoreMissingHeight()">전고 센서 복구</button>
+                </div>
+                <div id="iqr-alert" style="display:none;"></div>
+                <div id="missing-alert" style="display:none;"></div>
+            </div>
+
+            <div class="display-panel">
+                <div class="status-box">
+                    <h3>🤖 AI 제어 모드: <span id="control-mode">BALANCED</span></h3>
+                    <p>에어 플랩 상태: <span id="flap-state">닫힘</span></p>
+                    <p>스포일러 각도: <span id="spoiler-state">0</span>°</p>
+                </div>
+
+                <div class="efficiency-box">
+                    <h1>예상 전비: <span id="efficiency">5.5</span> km/kWh</h1>
+                    <div class="progress-container">
+                        <div id="efficiency-bar"></div>
+                    </div>
+                </div>
+
+                <div class="model-performance-box">
+                    <h3>📈 학습 완료된 모델 성능 (보고서 기준)</h3>
+                    <table class="model-table">
+                        <thead>
+                            <tr>
+                                <th>구분</th>
+                                <th>지표</th>
+                                <th>초기 모델</th>
+                                <th>개선 모델</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td rowspan="2">전비 예측 (회귀)</td>
+                                <td>R² Score</td>
+                                <td>0.9648</td>
+                                <td class="highlight">0.9921</td>
+                            </tr>
+                            <tr>
+                                <td>MSE</td>
+                                <td>0.0909</td>
+                                <td class="highlight">0.0204</td>
+                            </tr>
+                            <tr>
+                                <td rowspan="3">에어로파츠 제어 (분류)</td>
+                                <td>정확도</td>
+                                <td>1.0000</td>
+                                <td>1.0000</td>
+                            </tr>
+                            <tr>
+                                <td>재현율</td>
+                                <td>1.0000</td>
+                                <td>1.0000</td>
+                            </tr>
+                            <tr>
+                                <td>F1-Score</td>
+                                <td>1.0000</td>
+                                <td>1.0000</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="model-note">⚠️ 분류 모델의 100% 정확도는 제어 레이블(optimal_control_action)이 속도 임계값(60, 100km/h)으로 결정론적으로 정의되어 있기 때문일 가능성이 있습니다. 이는 보고서의 한계점으로 함께 서술하는 것을 권장합니다.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-container">
+            <h3>📊 실시간 물리 공식 대입 및 연산 과정</h3>
+            <hr>
+
+            <div class="formula-box">
+                <h4>1) 전면 투영 면적 ($A$)</h4>
+                <div class="math-line">$$A = \text{전고} \times \text{전폭}$$</div>
+                <div class="calc-line">
+                    <span class="calc-result" id="calc-A">0.00</span> m² =
+                    <span class="param-bind" id="param-h">0.00</span>m ×
+                    <span class="param-bind" id="param-w">0.00</span>m
+                </div>
+            </div>
+
+            <div class="formula-box">
+                <h4>2) 공기 저항력 ($F_d$)</h4>
+                <div class="math-line">$$F_d = \frac{1}{2} \times \rho \times v^2 \times C_d \times A$$</div>
+                <div class="calc-line">
+                    <span class="calc-result" id="calc-fd">0.0</span> N =
+                    0.5 × 1.225 ×
+                    (<span class="param-bind" id="param-v">0.0</span>m/s)² ×
+                    <span class="param-bind" id="param-cd">0.00</span> ×
+                    <span class="param-bind" id="param-area">0.00</span>m²
+                </div>
+            </div>
+
+            <div class="formula-box" style="border-left-color: #f59f00;">
+                <h4>3) 주행 저항 성분 분석 ($F_{\text{total}}$)</h4>
+                <div class="math-line">$$F_{\text{total}} = F_d \text{(공기저항)} + F_r \text{(구름저항)}$$</div>
+                <div class="resistance-ratio-labels">
+                    <span class="label-fd">공기저항: <span id="ratio-fd-val">0</span>N (<span id="ratio-fd-pct">0</span>%)</span>
+                    <span class="label-fr">구름저항: <span id="ratio-fr-val">0</span>N (<span id="ratio-fr-pct">0</span>%)</span>
+                </div>
+                <div class="progress-container" style="height: 14px; display: flex; border: 1px solid #dee2e6;">
+                    <div id="bar-fd"></div>
+                    <div id="bar-fr"></div>
+                </div>
+            </div>
+
+            <div class="variable-dictionary">
+                <h5>💡 실시간 대입 변수 설명</h5>
+                <ul>
+                    <li>$\rho$ (공기 밀도): 1.225 kg/m³ (고정 수치)</li>
+                    <li>$v$ (속도 변환): <span id="dict-v-km">0</span> km/h ➔ <span id="dict-v-m">0.0</span> m/s</li>
+                    <li>$C_d$ (유효 저항 계수): <span id="dict-cd">0.00</span></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/script.js"></script>
+</body>
+</html>
